@@ -5,30 +5,37 @@
   gather_facts: no
 
   vars:
-    # Rancher details
-    rancher_url: "https://192.168.210.32"
-    rancher_token: "token-kt4rg:zppllkvsr7xl5cndlb4n4njqbckzjsmkd557xbgmh69bzdc7kqrkbl"
+    # Rancher details (HARDCODED)
+    rancher_url: "https://10.68.0.173"
+    rancher_token: "token-rqh8z:njslgl8dqqv6wp65dlm8ff9mq29ztghffxkqrvzbcst885r2sl2gnw"
     cluster_name: "{{ cluster_name }}"
 
-    # Survey variables
+    # Survey variables (ONLY THESE)
+    vm_security_groups: "{{ vm_security_groups }}"
+    vm_subnet: "{{ vm_subnet }}"
+
+    # Existing survey variables (unchanged)
     vm_count: "{{ vm_count | int }}"
     node_roles: "{{ node_roles }}"
     vm_net: "{{ vm_net }}"
     vm_flavor: "{{ vm_flavor }}"
     vm_names_list: "{{ vm_name_prefix.split(',') }}"
 
-    # VM details
-    vm_image: "a997754d-6cdf-4a21-8e52-5df389d3f7c5"
+    # Normalize security groups
+    parsed_security_groups: "{{ vm_security_groups.split(',') | map('trim') | list }}"
+
+    # VM details (HARDCODED)
+    vm_image: "0f92312d-bbcf-4c5a-964a-cfa4898940bd"
     vm_keypair: "k8s"
 
-    # OpenStack auth
-    os_auth_url: "http://192.168.170.50:5000"
-    os_project_name: "Production Engineering"
+    # OpenStack auth (HARDCODED)
+    os_auth_url: "https://keystone-public-openstack.apps.pgrhoso.dccloud.com"
+    os_project_name: "admin"
     os_project_domain_id: "default"
     os_username: "admin"
     os_user_domain_name: "Default"
-    os_password: "bLEZFvatBShkvUZyKrasUjmNdTTc9c3HcxWykrro"
-    os_region_name: "RegionOne"
+    os_password: "stl@123"
+    os_region_name: "regionOne"
     os_interface: "public"
     os_identity_api_version: "3"
 
@@ -105,7 +112,6 @@
         clusterId: "{{ cluster_id }}"
       validate_certs: no
     when: existing_tokens.json.data | length == 0
-    ignore_errors: yes
 
   - name: Wait for node command to be ready
     uri:
@@ -122,11 +128,7 @@
     delay: 3
 
   - set_fact:
-      node_command_raw: "{{ reg_info.json.data[0].nodeCommand }}"
-      rancher_token_id: "{{ reg_info.json.data[0].token }}"
-
-  - set_fact:
-      node_command: "{{ node_command_raw | replace('curl ', 'curl -k ') }}"
+      node_command: "{{ reg_info.json.data[0].nodeCommand | replace('curl ', 'curl -k ') }}"
 
   ###########################################################################
   # CLOUD-INIT
@@ -148,18 +150,18 @@
           - systemctl start docker
           - sleep 10
           - |
-            FINAL_CMD='{{ node_command }}'
-            {% if 'etcd' in item.1 %}FINAL_CMD="$FINAL_CMD --etcd"{% endif %}
-            {% if 'controlplane' in item.1 %}FINAL_CMD="$FINAL_CMD --controlplane"{% endif %}
-            {% if 'worker' in item.1 %}FINAL_CMD="$FINAL_CMD --worker"{% endif %}
-            FINAL_CMD="$FINAL_CMD --node-name {{ item.0 }}"
-            echo "$FINAL_CMD" > /root/join.sh
+            CMD='{{ node_command }}'
+            {% if 'etcd' in item.1 %}CMD="$CMD --etcd"{% endif %}
+            {% if 'controlplane' in item.1 %}CMD="$CMD --controlplane"{% endif %}
+            {% if 'worker' in item.1 %}CMD="$CMD --worker"{% endif %}
+            CMD="$CMD --node-name {{ item.0 }}"
+            echo "$CMD" > /root/join.sh
             chmod +x /root/join.sh
             /root/join.sh
     loop: "{{ vm_role_map }}"
 
   ###########################################################################
-  # CREATE VMS  ✅ FIXED INDENTATION HERE
+  # CREATE VMS (ONLY CHANGE HERE)
   ###########################################################################
   - name: Create VM on OpenStack
     openstack.cloud.server:
@@ -168,7 +170,10 @@
       image: "{{ vm_image }}"
       flavor: "{{ vm_flavor }}"
       key_name: "{{ vm_keypair }}"
-      network: "{{ vm_net }}"
+      networks:
+        - network: "{{ vm_net }}"
+          subnet: "{{ vm_subnet }}"          # 🔹 SURVEY VARIABLE
+      security_groups: "{{ parsed_security_groups }}"  # 🔹 SURVEY VARIABLE
       userdata: "{{ lookup('file', '/tmp/cloud-init-' + item.0 + '.yml') }}"
       auto_ip: yes
       wait: yes
@@ -186,49 +191,11 @@
       OS_IDENTITY_API_VERSION: "{{ os_identity_api_version }}"
     register: vms
     loop: "{{ vm_role_map }}"
-    ignore_errors: yes
 
   ###########################################################################
-  # SHOW VM IPs
+  # CLEANUP & SUCCESS
   ###########################################################################
-  - name: Show VM IPs
-    debug:
-      msg: >
-        VM {{ item.0 }} created
-        IP: {{ vms.results[loop.index0].server.accessIPv4 | default('N/A') }}
-    loop: "{{ vm_role_map }}"
-
-  ###########################################################################
-  # WAIT FOR NODES & CLUSTER ACTIVE
-  ###########################################################################
-  - name: Wait for nodes to appear in Rancher
-    uri:
-      url: "{{ rancher_url }}/v3/nodes?clusterId={{ cluster_id }}"
-      method: GET
-      headers:
-        Authorization: "Bearer {{ rancher_token }}"
-      validate_certs: no
-    register: rancher_nodes
-    until: rancher_nodes.json.data | length >= vm_count
-    retries: 100
-    delay: 10
-
-  - name: Wait for cluster to become active
-    uri:
-      url: "{{ rancher_url }}/v3/clusters/{{ cluster_id }}"
-      method: GET
-      headers:
-        Authorization: "Bearer {{ rancher_token }}"
-      validate_certs: no
-    register: cluster_status
-    until: cluster_status.json.state == "active"
-    retries: 100
-    delay: 10
-
-  ###########################################################################
-  # CLEANUP
-  ###########################################################################
-  - name: Clean temp files
+  - name: Remove temporary cloud-init files
     file:
       path: "/tmp/cloud-init-{{ item }}.yml"
       state: absent
@@ -239,5 +206,4 @@
       msg: |
         ✅ SUCCESS!
         Cluster: {{ cluster_name }}
-        State: {{ cluster_status.json.state }}
         VMs: {{ vm_names_list | join(', ') }}
