@@ -3,11 +3,11 @@
   hosts: localhost
   gather_facts: false
   vars:
-    rancher_url: "https://192.168.210.32"
-    api_token: "token-kt4rg:zppllkvsr7xl5cndlb4n4njqbckzjsmkd557xbgmh69bzdc7kqrkbl"
+    rancher_url: "https://10.68.0.173"
+    api_token: "token-rqh8z:njslgl8dqqv6wp65dlm8ff9mq29ztghffxkqrvzbcst885r2sl2gnw"
     cluster_name: "{{ cluster_name }}"
     # Hardcode only the correct checksum
-    correct_checksum: "314fb475a79f038ea12ebc2be48956716027ceebf9dd5ea11d7dce85bb2b20c7"
+    correct_checksum: "1223eddc5792fd9a636f24082dc5dd1d93a682391a6425aa0b7d674f1645ab03"
 
   tasks:
     - name: Fetch cluster details
