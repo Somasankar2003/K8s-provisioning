@@ -57,7 +57,7 @@
       fail_msg: "vm_count must match number of VM names"
 
   ###########################################################################
-  # AUTO ROLE GENERATION (GUARANTEED LOGIC)
+  # AUTO ROLE GENERATION (GUARANTEED ALL ROLES)
   ###########################################################################
   - name: Generate roles automatically
     set_fact:
@@ -127,7 +127,7 @@
       node_command: "{{ reg_info.json.data[0].nodeCommand | replace('curl ', 'curl -k ') }}"
 
   ###########################################################################
-  # CLOUD-INIT
+  # CLOUD-INIT (WITH K3S FIXES)
   ###########################################################################
   - name: Create cloud-init files
     copy:
@@ -141,6 +141,12 @@
           - nfs-common
 
         runcmd:
+          - swapoff -a
+          - sed -i '/ swap / s/^/#/' /etc/fstab
+          - modprobe br_netfilter
+          - sysctl -w net.bridge.bridge-nf-call-iptables=1
+          - sysctl -w net.bridge.bridge-nf-call-ip6tables=1
+          - sysctl -w net.ipv4.ip_forward=1
           - sleep 30
           - |
             CMD="{{ node_command }}"
