@@ -45,7 +45,7 @@
     os_user_domain_name: "Default"
     os_password: "stl@123"
     os_region_name: "regionOne"
-    os_interface: internal
+    os_interface: "public"
     os_identity_api_version: "3"
 
   tasks:
