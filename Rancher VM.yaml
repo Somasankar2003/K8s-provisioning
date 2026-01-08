@@ -13,7 +13,7 @@
     cluster_name: "{{ cluster_name }}"
 
     ###########################################################################
-    # Survey variables (ONLY THESE)
+    # Survey variables
     ###########################################################################
     vm_count: "{{ vm_count | int }}"
     vm_name_prefix: "{{ vm_name_prefix }}"
@@ -139,7 +139,7 @@
       node_command: "{{ reg_info.json.data[0].nodeCommand | replace('curl ', 'curl -k ') }}"
 
   ###########################################################################
-  # CLOUD-INIT
+  # CLOUD-INIT (RANCHER / RKE2 CORRECT)
   ###########################################################################
   - name: Create cloud-init files
     copy:
@@ -149,13 +149,14 @@
         package_update: true
         packages:
           - curl
-          - docker.io
           - jq
           - nfs-common
 
         runcmd:
-          - systemctl enable docker
-          - systemctl start docker
+          - modprobe overlay
+          - modprobe br_netfilter
+          - sysctl -w net.ipv4.ip_forward=1
+          - sysctl -w net.bridge.bridge-nf-call-iptables=1
           - sleep 10
           - |
             CMD='{{ node_command }}'
@@ -169,7 +170,7 @@
     loop: "{{ vm_role_map }}"
 
   ###########################################################################
-  # CREATE VMS (SUBNET REMOVED – RHOSP SAFE)
+  # CREATE VMS (RHOSP SAFE)
   ###########################################################################
   - name: Create VM on OpenStack
     openstack.cloud.server:
