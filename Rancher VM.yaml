@@ -5,30 +5,39 @@
   gather_facts: no
 
   vars:
+    ###########################################################################
     # Rancher details (HARDCODED)
+    ###########################################################################
     rancher_url: "https://10.68.0.173"
     rancher_token: "token-rqh8z:njslgl8dqqv6wp65dlm8ff9mq29ztghffxkqrvzbcst885r2sl2gnw"
     cluster_name: "{{ cluster_name }}"
 
+    ###########################################################################
     # Survey variables (ONLY THESE)
-    vm_security_groups: "{{ vm_security_groups }}"
-    vm_subnet: "{{ vm_subnet }}"
-
-    # Existing survey variables (unchanged)
+    ###########################################################################
     vm_count: "{{ vm_count | int }}"
+    vm_name_prefix: "{{ vm_name_prefix }}"
     node_roles: "{{ node_roles }}"
     vm_net: "{{ vm_net }}"
+    vm_subnet: "{{ vm_subnet }}"
     vm_flavor: "{{ vm_flavor }}"
-    vm_names_list: "{{ vm_name_prefix.split(',') }}"
+    vm_security_groups: "{{ vm_security_groups }}"
 
-    # Normalize security groups
+    ###########################################################################
+    # Derived variables
+    ###########################################################################
+    vm_names_list: "{{ vm_name_prefix.split(',') | map('trim') | list }}"
     parsed_security_groups: "{{ vm_security_groups.split(',') | map('trim') | list }}"
 
+    ###########################################################################
     # VM details (HARDCODED)
+    ###########################################################################
     vm_image: "0f92312d-bbcf-4c5a-964a-cfa4898940bd"
     vm_keypair: "k8s"
 
+    ###########################################################################
     # OpenStack auth (HARDCODED)
+    ###########################################################################
     os_auth_url: "https://keystone-public-openstack.apps.pgrhoso.dccloud.com"
     os_project_name: "admin"
     os_project_domain_id: "default"
@@ -43,12 +52,12 @@
   ###########################################################################
   # VALIDATION
   ###########################################################################
-  - name: Validate inputs
+  - name: Validate VM count and names
     assert:
       that:
         - vm_count >= 1
         - vm_names_list | length == vm_count
-      fail_msg: "vm_count must match VM names"
+      fail_msg: "vm_count must match number of VM names"
 
   - name: Normalize node roles
     set_fact:
@@ -63,7 +72,7 @@
     assert:
       that:
         - parsed_roles | length == vm_count
-      fail_msg: "Role count must match vm_count"
+      fail_msg: "node_roles count must match vm_count"
 
   - name: Build VM role mapping
     set_fact:
@@ -83,25 +92,25 @@
 
   - name: Fail if cluster not found
     fail:
-      msg: "Cluster '{{ cluster_name }}' not found in Rancher."
+      msg: "Cluster '{{ cluster_name }}' not found in Rancher"
     when: cluster_info.json.data | length == 0
 
   - set_fact:
       cluster_id: "{{ cluster_info.json.data[0].id }}"
 
   ###########################################################################
-  # GET RANCHER JOIN TOKEN
+  # GET / CREATE RANCHER JOIN TOKEN
   ###########################################################################
-  - name: Check for existing registration tokens
+  - name: Get registration tokens
     uri:
       url: "{{ rancher_url }}/v3/clusterRegistrationTokens?clusterId={{ cluster_id }}"
       method: GET
       headers:
         Authorization: "Bearer {{ rancher_token }}"
       validate_certs: no
-    register: existing_tokens
+    register: reg_tokens
 
-  - name: Create registration token if needed
+  - name: Create token if missing
     uri:
       url: "{{ rancher_url }}/v3/clusterRegistrationTokens"
       method: POST
@@ -111,9 +120,9 @@
       body:
         clusterId: "{{ cluster_id }}"
       validate_certs: no
-    when: existing_tokens.json.data | length == 0
+    when: reg_tokens.json.data | length == 0
 
-  - name: Wait for node command to be ready
+  - name: Wait for node command
     uri:
       url: "{{ rancher_url }}/v3/clusterRegistrationTokens?clusterId={{ cluster_id }}"
       method: GET
@@ -161,7 +170,7 @@
     loop: "{{ vm_role_map }}"
 
   ###########################################################################
-  # CREATE VMS (ONLY CHANGE HERE)
+  # CREATE VMS (RHOSP-CORRECT)
   ###########################################################################
   - name: Create VM on OpenStack
     openstack.cloud.server:
@@ -170,10 +179,10 @@
       image: "{{ vm_image }}"
       flavor: "{{ vm_flavor }}"
       key_name: "{{ vm_keypair }}"
-      networks:
-        - network: "{{ vm_net }}"
-          subnet: "{{ vm_subnet }}"          # 🔹 SURVEY VARIABLE
-      security_groups: "{{ parsed_security_groups }}"  # 🔹 SURVEY VARIABLE
+      nics:
+        - net-name: "{{ vm_net }}"
+          subnet-name: "{{ vm_subnet }}"
+      security_groups: "{{ parsed_security_groups }}"
       userdata: "{{ lookup('file', '/tmp/cloud-init-' + item.0 + '.yml') }}"
       auto_ip: yes
       wait: yes
@@ -189,7 +198,6 @@
       OS_REGION_NAME: "{{ os_region_name }}"
       OS_INTERFACE: "{{ os_interface }}"
       OS_IDENTITY_API_VERSION: "{{ os_identity_api_version }}"
-    register: vms
     loop: "{{ vm_role_map }}"
 
   ###########################################################################
