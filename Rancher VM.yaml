@@ -31,6 +31,7 @@
     ###########################################################################
     vm_image: "0f92312d-bbcf-4c5a-964a-cfa4898940bd"
     vm_keypair: "k8"
+    root_volume_size: 40   # 🔥 FIX: root disk size
 
     ###########################################################################
     # OpenStack auth
@@ -126,7 +127,7 @@
       node_command: "{{ reg_info.json.data[0].nodeCommand | replace('curl ', 'curl -k ') }}"
 
   ###########################################################################
-  # CLOUD-INIT (FULL FIX – PRODUCTION SAFE)
+  # CLOUD-INIT (FIXED – NO containerd INSTALL)
   ###########################################################################
   - name: Create cloud-init files
     copy:
@@ -138,18 +139,14 @@
           - curl
           - jq
           - nfs-common
-          - containerd
 
         runcmd:
-          # Disable swap (mandatory)
           - swapoff -a
           - sed -i '/ swap / s/^/#/' /etc/fstab
 
-          # Kernel modules
           - modprobe overlay
           - modprobe br_netfilter
 
-          # Persistent sysctl
           - |
             cat <<EOF >/etc/sysctl.d/99-kubernetes.conf
             net.bridge.bridge-nf-call-iptables=1
@@ -158,14 +155,8 @@
             EOF
           - sysctl --system
 
-          # Container runtime
-          - systemctl enable containerd
-          - systemctl restart containerd
-
-          # Wait for network + DNS
           - sleep 60
 
-          # Rancher join (FAIL FAST)
           - |
             set -eux
             CMD="{{ node_command }}"
@@ -179,21 +170,27 @@
     loop: "{{ vm_role_map }}"
 
   ###########################################################################
-  # CREATE VMs
+  # CREATE VMs (BOOT FROM VOLUME FIX)
   ###########################################################################
-  - name: Create VM on OpenStack
+  - name: Create VM on OpenStack (boot from volume)
     openstack.cloud.server:
       state: present
       name: "{{ item.0 }}"
+
+      boot_from_volume: true
+      volume_size: "{{ root_volume_size }}"
+      delete_volume_on_termination: true
       image: "{{ vm_image }}"
+
       flavor: "{{ vm_flavor }}"
       key_name: "{{ vm_keypair }}"
       network: "{{ vm_net }}"
       security_groups: "{{ parsed_security_groups }}"
       userdata: "{{ lookup('file', '/tmp/cloud-init-' + item.0 + '.yml') }}"
+
       auto_ip: yes
       wait: yes
-      timeout: 600
+      timeout: 900
       validate_certs: false
     environment:
       OS_AUTH_URL: "{{ os_auth_url }}"
