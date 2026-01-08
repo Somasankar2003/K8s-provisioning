@@ -13,14 +13,14 @@
     cluster_name: "{{ cluster_name }}"
 
     ###########################################################################
-    # Survey variables
+    # Survey variables (AAP)
     ###########################################################################
     vm_count: "{{ vm_count | int }}"
     node_roles: "{{ node_roles }}"
     vm_net: "{{ vm_net }}"
     vm_flavor: "{{ vm_flavor }}"
     vm_security_groups: "{{ vm_security_groups }}"
-    vm_names_list: "{{ vm_name_prefix.split(',') }}"
+    vm_names_list: "{{ vm_name_prefix.split(',') | map('trim') | list }}"
 
     ###########################################################################
     # Derived variables
@@ -70,7 +70,7 @@
     assert:
       that:
         - parsed_roles | length == vm_count
-      fail_msg: "Role count must match vm_count"
+      fail_msg: "node_roles count must match vm_count"
 
   - name: Build VM role mapping
     set_fact:
@@ -90,14 +90,14 @@
 
   - name: Fail if cluster not found
     fail:
-      msg: "Cluster '{{ cluster_name }}' not found in Rancher."
+      msg: "Cluster '{{ cluster_name }}' not found in Rancher"
     when: cluster_info.json.data | length == 0
 
   - set_fact:
       cluster_id: "{{ cluster_info.json.data[0].id }}"
 
   ###########################################################################
-  # GET RANCHER JOIN TOKEN
+  # GET / CREATE RANCHER JOIN TOKEN
   ###########################################################################
   - name: Get registration tokens
     uri:
@@ -131,14 +131,14 @@
     until:
       - reg_info.json.data[0].nodeCommand is defined
       - reg_info.json.data[0].nodeCommand != ""
-    retries: 15
-    delay: 3
+    retries: 20
+    delay: 5
 
   - set_fact:
       node_command: "{{ reg_info.json.data[0].nodeCommand | replace('curl ', 'curl -k ') }}"
 
   ###########################################################################
-  # CLOUD-INIT (FIXED FOR RANCHER)
+  # CLOUD-INIT (K3s FIXED)
   ###########################################################################
   - name: Create cloud-init files
     copy:
@@ -150,12 +150,12 @@
           - curl
           - jq
           - nfs-common
-          - containerd
 
         runcmd:
-          - systemctl enable containerd
-          - systemctl start containerd
-          - sleep 20
+          - curl -sfL https://get.k3s.io | sh -
+          - systemctl enable k3s
+          - systemctl start k3s
+          - sleep 30
           - |
             CMD='{{ node_command }}'
             {% if 'etcd' in item.1 %}CMD="$CMD --etcd"{% endif %}
@@ -168,7 +168,7 @@
     loop: "{{ vm_role_map }}"
 
   ###########################################################################
-  # CREATE VMS
+  # CREATE VMs (SECURITY GROUP FROM SURVEY)
   ###########################################################################
   - name: Create VM on OpenStack
     openstack.cloud.server:
@@ -209,7 +209,7 @@
     register: cluster_status
     until: cluster_status.json.state == "active"
     retries: 120
-    delay: 15
+    delay: 10
 
   ###########################################################################
   # CLEANUP
