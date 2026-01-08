@@ -20,7 +20,7 @@
             name: "{{ cluster_name }}"
             namespace: "fleet-default"
           spec:
-            kubernetesVersion: "v1.34.1+k3s1"
+            kubernetesVersion: "v1.34.2+rk2r1"
             rkeConfig:
               machinePools: []
         validate_certs: false
