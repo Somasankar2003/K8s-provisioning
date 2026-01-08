@@ -22,6 +22,11 @@
     vm_names_list: "{{ vm_name_prefix.split(',') | map('trim') | list }}"
 
     ###########################################################################
+    # Root volume (REQUIRED – flavor has no disk)
+    ###########################################################################
+    root_volume_size: 40   # ✅ MUST be >= 40GB to avoid containerd failure
+
+    ###########################################################################
     # Derived variables
     ###########################################################################
     parsed_security_groups: "{{ vm_security_groups.split(',') | map('trim') | list }}"
@@ -31,7 +36,6 @@
     ###########################################################################
     vm_image: "0f92312d-bbcf-4c5a-964a-cfa4898940bd"
     vm_keypair: "k8"
-    root_volume_size: 40   # 🔥 FIX: root disk size
 
     ###########################################################################
     # OpenStack auth
@@ -127,7 +131,7 @@
       node_command: "{{ reg_info.json.data[0].nodeCommand | replace('curl ', 'curl -k ') }}"
 
   ###########################################################################
-  # CLOUD-INIT (FIXED – NO containerd INSTALL)
+  # CLOUD-INIT (HARDENED & FIXED)
   ###########################################################################
   - name: Create cloud-init files
     copy:
@@ -135,18 +139,22 @@
       content: |
         #cloud-config
         package_update: true
+
         packages:
           - curl
           - jq
           - nfs-common
 
         runcmd:
+          # Disable swap
           - swapoff -a
           - sed -i '/ swap / s/^/#/' /etc/fstab
 
+          # Kernel modules
           - modprobe overlay
           - modprobe br_netfilter
 
+          # Kubernetes sysctl
           - |
             cat <<EOF >/etc/sysctl.d/99-kubernetes.conf
             net.bridge.bridge-nf-call-iptables=1
@@ -155,8 +163,10 @@
             EOF
           - sysctl --system
 
+          # Wait for network
           - sleep 60
 
+          # Rancher join
           - |
             set -eux
             CMD="{{ node_command }}"
@@ -170,7 +180,7 @@
     loop: "{{ vm_role_map }}"
 
   ###########################################################################
-  # CREATE VMs (BOOT FROM VOLUME FIX)
+  # CREATE VMs (BOOT FROM VOLUME – FIXED)
   ###########################################################################
   - name: Create VM on OpenStack (boot from volume)
     openstack.cloud.server:
@@ -179,7 +189,7 @@
 
       boot_from_volume: true
       volume_size: "{{ root_volume_size }}"
-      delete_volume_on_termination: true
+      terminate_volume: true          # ✅ CORRECT PARAMETER
       image: "{{ vm_image }}"
 
       flavor: "{{ vm_flavor }}"
