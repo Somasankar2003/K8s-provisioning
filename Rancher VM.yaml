@@ -68,12 +68,11 @@
           else
           (
             range(0, vm_count)
-            | map('int')
             | map('mod', 3)
             | map('extract', {
                 0: 'etcd',
-                1: 'worker',
-                2: 'controlplane'
+                1: 'controlplane',
+                2: 'worker'
               })
             | list
           )
@@ -127,7 +126,7 @@
       node_command: "{{ reg_info.json.data[0].nodeCommand | replace('curl ', 'curl -k ') }}"
 
   ###########################################################################
-  # CLOUD-INIT (WITH K3S FIXES)
+  # CLOUD-INIT (FULL FIX – PRODUCTION SAFE)
   ###########################################################################
   - name: Create cloud-init files
     copy:
@@ -139,16 +138,36 @@
           - curl
           - jq
           - nfs-common
+          - containerd
 
         runcmd:
+          # Disable swap (mandatory)
           - swapoff -a
           - sed -i '/ swap / s/^/#/' /etc/fstab
+
+          # Kernel modules
+          - modprobe overlay
           - modprobe br_netfilter
-          - sysctl -w net.bridge.bridge-nf-call-iptables=1
-          - sysctl -w net.bridge.bridge-nf-call-ip6tables=1
-          - sysctl -w net.ipv4.ip_forward=1
-          - sleep 30
+
+          # Persistent sysctl
           - |
+            cat <<EOF >/etc/sysctl.d/99-kubernetes.conf
+            net.bridge.bridge-nf-call-iptables=1
+            net.bridge.bridge-nf-call-ip6tables=1
+            net.ipv4.ip_forward=1
+            EOF
+          - sysctl --system
+
+          # Container runtime
+          - systemctl enable containerd
+          - systemctl restart containerd
+
+          # Wait for network + DNS
+          - sleep 60
+
+          # Rancher join (FAIL FAST)
+          - |
+            set -eux
             CMD="{{ node_command }}"
             {% if 'etcd' in item.1 %}CMD="$CMD --etcd"{% endif %}
             {% if 'controlplane' in item.1 %}CMD="$CMD --controlplane"{% endif %}
@@ -156,7 +175,7 @@
             CMD="$CMD --node-name {{ item.0 }}"
             echo "$CMD" > /root/join.sh
             chmod +x /root/join.sh
-            /root/join.sh
+            bash -x /root/join.sh
     loop: "{{ vm_role_map }}"
 
   ###########################################################################
