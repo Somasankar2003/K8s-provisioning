@@ -63,7 +63,7 @@
       fail_msg: "vm_count must match number of VM names"
 
   ###########################################################################
-  # MANUAL ROLE ASSIGNMENT (SURVEY BASED) ✅ REPLACED PART
+  # MANUAL ROLE ASSIGNMENT
   ###########################################################################
   - name: Parse node roles
     set_fact:
@@ -73,9 +73,7 @@
     assert:
       that:
         - parsed_roles | length == vm_count
-      fail_msg: >
-        node_roles count must match vm_count.
-        Example: etcd,controlplane,worker
+      fail_msg: "node_roles count must match vm_count"
 
   - name: Validate required Rancher roles
     assert:
@@ -83,8 +81,7 @@
         - "'etcd' in parsed_roles"
         - "'controlplane' in parsed_roles"
         - "'worker' in parsed_roles"
-      fail_msg: >
-        node_roles must contain etcd, controlplane, and worker at least once
+      fail_msg: "node_roles must include etcd, controlplane, worker"
 
   - name: Build VM to role mapping
     set_fact:
@@ -104,14 +101,14 @@
 
   - name: Fail if cluster not found
     fail:
-      msg: "Cluster '{{ cluster_name }}' not found in Rancher"
+      msg: "Cluster '{{ cluster_name }}' not found"
     when: cluster_info.json.data | length == 0
 
   - set_fact:
       cluster_id: "{{ cluster_info.json.data[0].id }}"
 
   ###########################################################################
-  # GET RANCHER JOIN COMMAND
+  # GET JOIN COMMAND
   ###########################################################################
   - name: Get registration token
     uri:
@@ -124,7 +121,6 @@
     until:
       - reg_info.json.data | length > 0
       - reg_info.json.data[0].nodeCommand is defined
-      - reg_info.json.data[0].nodeCommand != ""
     retries: 20
     delay: 5
 
@@ -132,7 +128,7 @@
       node_command: "{{ reg_info.json.data[0].nodeCommand | replace('curl ', 'curl -k ') }}"
 
   ###########################################################################
-  # CLOUD-INIT
+  # CLOUD-INIT (FIXED)
   ###########################################################################
   - name: Create cloud-init files
     copy:
@@ -165,7 +161,9 @@
             {% if 'controlplane' in item.1 %}CMD="$CMD --controlplane"{% endif %}
             {% if 'worker' in item.1 %}CMD="$CMD --worker"{% endif %}
             CMD="$CMD --node-name {{ item.0 }}"
-            bash -x <(echo "$CMD")
+            echo "$CMD" > /root/join.sh
+            chmod +x /root/join.sh
+            bash /root/join.sh
     loop: "{{ vm_role_map }}"
 
   ###########################################################################
