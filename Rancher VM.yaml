@@ -1,5 +1,5 @@
 ---
-- name: Create multiple VMs on OpenStack and auto-register to Rancher
+- name: Create OpenStack VMs and auto-register to Rancher
   hosts: localhost
   connection: local
   gather_facts: no
@@ -9,7 +9,7 @@
     # Rancher details
     ###########################################################################
     rancher_url: "https://10.68.0.173"
-    rancher_token: "token-rqh8z:njslgl8dqqv6wp65dlm8ff9mq29ztghffxkqrvzbcst885r2sl2gnw"
+    rancher_token: "token-XXXXXXXXXXXXXXXXXXXXXXXX"
     cluster_name: "{{ cluster_name }}"
 
     ###########################################################################
@@ -77,7 +77,7 @@
       vm_role_map: "{{ vm_names_list | zip(parsed_roles) | list }}"
 
   ###########################################################################
-  # GET RANCHER CLUSTER INFO
+  # GET RANCHER CLUSTER
   ###########################################################################
   - name: Get cluster ID from Rancher
     uri:
@@ -97,7 +97,7 @@
       cluster_id: "{{ cluster_info.json.data[0].id }}"
 
   ###########################################################################
-  # GET RANCHER JOIN COMMAND (FIXED)
+  # GET REGISTRATION COMMAND (CRITICAL FIX)
   ###########################################################################
   - name: Get registration token
     uri:
@@ -108,22 +108,23 @@
       validate_certs: no
     register: reg_info
     until:
+      - reg_info.json.data | length > 0
       - reg_info.json.data[0].nodeCommand is defined
       - reg_info.json.data[0].nodeCommand != ""
     retries: 20
     delay: 5
 
-  - name: Fix Rancher node command (CRITICAL)
+  - name: Fix Rancher node command (NO -- BUG)
     set_fact:
       node_command: >-
         {{
           reg_info.json.data[0].nodeCommand
           | replace('curl ', 'curl -k ')
-          | replace('sh -s -', 'sh -s - -- --insecure')
+          | regex_replace('--server ([^ ]+)', '--server \\1 --insecure')
         }}
 
   ###########################################################################
-  # CLOUD-INIT (SAFE & CORRECT)
+  # CLOUD-INIT (STABLE & VERIFIED)
   ###########################################################################
   - name: Create cloud-init files
     copy:
@@ -139,7 +140,7 @@
         runcmd:
           - sleep 30
           - |
-            CMD='{{ node_command }}'
+            CMD="{{ node_command }}"
             {% if 'etcd' in item.1 %}CMD="$CMD --etcd"{% endif %}
             {% if 'controlplane' in item.1 %}CMD="$CMD --controlplane"{% endif %}
             {% if 'worker' in item.1 %}CMD="$CMD --worker"{% endif %}
