@@ -9,7 +9,7 @@
     # Rancher details
     ###########################################################################
     rancher_url: "https://10.68.0.173"
-    rancher_token: "{{ rancher_token }}"
+    rancher_token: "token-rqh8z:njslgl8dqqv6wp65dlm8ff9mq29ztghffxkqrvzbcst885r2sl2gnw"
     cluster_name: "{{ cluster_name }}"
 
     ###########################################################################
