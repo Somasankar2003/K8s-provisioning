@@ -19,7 +19,6 @@
     vm_name_prefix: "{{ vm_name_prefix }}"
     node_roles: "{{ node_roles }}"
     vm_net: "{{ vm_net }}"
-    vm_subnet: "{{ vm_subnet }}"
     vm_flavor: "{{ vm_flavor }}"
     vm_security_groups: "{{ vm_security_groups }}"
 
@@ -170,7 +169,7 @@
     loop: "{{ vm_role_map }}"
 
   ###########################################################################
-  # CREATE VMS (RHOSP-CORRECT)
+  # CREATE VMS (SUBNET REMOVED – RHOSP SAFE)
   ###########################################################################
   - name: Create VM on OpenStack
     openstack.cloud.server:
@@ -179,9 +178,7 @@
       image: "{{ vm_image }}"
       flavor: "{{ vm_flavor }}"
       key_name: "{{ vm_keypair }}"
-      nics:
-        - net-name: "{{ vm_net }}"
-          subnet-name: "{{ vm_subnet }}"
+      network: "{{ vm_net }}"
       security_groups: "{{ parsed_security_groups }}"
       userdata: "{{ lookup('file', '/tmp/cloud-init-' + item.0 + '.yml') }}"
       auto_ip: yes
