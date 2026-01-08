@@ -9,7 +9,7 @@
     # Rancher details
     ###########################################################################
     rancher_url: "https://10.68.0.173"
-    rancher_token: "token-rqh8z:njslgl8dqqv6wp65dlm8ff9mq29ztghffxkqrvzbcst885r2sl2gnw"
+    rancher_token: "{{ rancher_token }}"
     cluster_name: "{{ cluster_name }}"
 
     ###########################################################################
@@ -23,20 +23,22 @@
     vm_names_list: "{{ vm_name_prefix.split(',') | map('trim') | list }}"
 
     ###########################################################################
-    # Root volume (FIXED)
+    # ROLE-BASED DISK SIZES (CRITICAL FIX)
     ###########################################################################
-    root_volume_size: 60
-
-    ###########################################################################
-    # Derived variables
-    ###########################################################################
-    parsed_security_groups: "{{ vm_security_groups.split(',') | map('trim') | list }}"
+    etcd_disk: 100
+    controlplane_disk: 60
+    worker_disk: 60
 
     ###########################################################################
     # VM details
     ###########################################################################
     vm_image: "c2326965-428c-47b0-b2a8-35f81b3eeeb1"
     vm_keypair: "k8"
+
+    ###########################################################################
+    # Derived
+    ###########################################################################
+    parsed_security_groups: "{{ vm_security_groups.split(',') | map('trim') | list }}"
 
     ###########################################################################
     # OpenStack auth
@@ -46,7 +48,7 @@
     os_project_domain_id: "default"
     os_username: "admin"
     os_user_domain_name: "Default"
-    os_password: "stl@123"
+    os_password: "{{ os_password }}"
     os_region_name: "regionOne"
     os_interface: "public"
     os_identity_api_version: "3"
@@ -55,21 +57,16 @@
   ###########################################################################
   # VALIDATION
   ###########################################################################
-  - name: Validate inputs
+  - name: Validate VM count and names
     assert:
       that:
         - vm_count >= 1
         - vm_names_list | length == vm_count
       fail_msg: "vm_count must match number of VM names"
 
-  - name: Normalize node roles
+  - name: Parse node roles
     set_fact:
-      parsed_roles: >-
-        {{
-          [node_roles]
-          if vm_count == 1
-          else (node_roles.split(',') | map('trim') | list)
-        }}
+      parsed_roles: "{{ node_roles.split(',') | map('trim') | list }}"
 
   - name: Validate role count
     assert:
@@ -77,7 +74,7 @@
         - parsed_roles | length == vm_count
       fail_msg: "node_roles count must match vm_count"
 
-  - name: Validate required Rancher roles
+  - name: Validate required roles
     assert:
       that:
         - "'etcd' in parsed_roles"
@@ -85,12 +82,12 @@
         - "'worker' in parsed_roles"
       fail_msg: "node_roles must include etcd, controlplane, worker"
 
-  - name: Build VM to role mapping
+  - name: Build VM-role mapping
     set_fact:
       vm_role_map: "{{ vm_names_list | zip(parsed_roles) | list }}"
 
   ###########################################################################
-  # GET RANCHER CLUSTER INFO
+  # GET CLUSTER ID
   ###########################################################################
   - name: Get cluster ID from Rancher
     uri:
@@ -110,7 +107,7 @@
       cluster_id: "{{ cluster_info.json.data[0].id }}"
 
   ###########################################################################
-  # GET RANCHER JOIN COMMAND
+  # GET JOIN COMMAND
   ###########################################################################
   - name: Get registration token
     uri:
@@ -131,7 +128,7 @@
       node_command: "{{ reg_info.json.data[0].nodeCommand | replace('curl ', 'curl -k ') }}"
 
   ###########################################################################
-  # CLOUD-INIT (FIXED, NO DOCKER)
+  # CLOUD-INIT (RKE2 SAFE)
   ###########################################################################
   - name: Create cloud-init files
     copy:
@@ -139,6 +136,7 @@
       content: |
         #cloud-config
         package_update: true
+
         packages:
           - curl
           - jq
@@ -156,8 +154,7 @@
             net.ipv4.ip_forward=1
             EOF
           - sysctl --system
-          - timedatectl set-ntp true
-          - sleep 30
+          - sleep 60
           - |
             set -eux
             CMD="{{ node_command }}"
@@ -171,14 +168,19 @@
     loop: "{{ vm_role_map }}"
 
   ###########################################################################
-  # CREATE VMs (BOOT FROM 60GB VOLUME)
+  # CREATE VMS (BOOT FROM VOLUME – FIXED)
   ###########################################################################
   - name: Create VM on OpenStack
     openstack.cloud.server:
       state: present
       name: "{{ item.0 }}"
       boot_from_volume: true
-      volume_size: "{{ root_volume_size }}"
+      volume_size: >-
+        {{
+          etcd_disk if 'etcd' in item.1
+          else controlplane_disk if 'controlplane' in item.1
+          else worker_disk
+        }}
       terminate_volume: true
       image: "{{ vm_image }}"
       flavor: "{{ vm_flavor }}"
@@ -188,7 +190,7 @@
       userdata: "{{ lookup('file', '/tmp/cloud-init-' + item.0 + '.yml') }}"
       auto_ip: yes
       wait: yes
-      timeout: 900
+      timeout: 1200
       validate_certs: false
     environment:
       OS_AUTH_URL: "{{ os_auth_url }}"
@@ -203,10 +205,32 @@
     loop: "{{ vm_role_map }}"
 
   ###########################################################################
+  # WAIT FOR CLUSTER ACTIVE
+  ###########################################################################
+  - name: Wait for cluster to become active
+    uri:
+      url: "{{ rancher_url }}/v3/clusters/{{ cluster_id }}"
+      method: GET
+      headers:
+        Authorization: "Bearer {{ rancher_token }}"
+      validate_certs: no
+    register: cluster_status
+    until: cluster_status.json.state == "active"
+    retries: 120
+    delay: 10
+
+  ###########################################################################
   # CLEANUP
   ###########################################################################
-  - name: Clean cloud-init files
+  - name: Clean temporary cloud-init files
     file:
       path: "/tmp/cloud-init-{{ item }}.yml"
       state: absent
     loop: "{{ vm_names_list }}"
+
+  - name: Success
+    debug:
+      msg: |
+        ✅ CLUSTER ACTIVE
+        Cluster: {{ cluster_name }}
+        Nodes: {{ vm_names_list | join(', ') }}
