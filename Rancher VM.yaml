@@ -9,7 +9,7 @@
     # Rancher details
     ###########################################################################
     rancher_url: "https://10.68.0.173"
-    rancher_token: "token-njslgl8dqqv6wp65dlm8ff9mq29ztghffxkqrvzbcst885r2sl2gnw"
+    rancher_token: "{{ rancher_token }}"
     cluster_name: "{{ cluster_name }}"
 
     ###########################################################################
@@ -41,7 +41,7 @@
     os_project_domain_id: "default"
     os_username: "admin"
     os_user_domain_name: "Default"
-    os_password: "stl@123"
+    os_password: "{{ os_password }}"
     os_region_name: "regionOne"
     os_interface: "public"
     os_identity_api_version: "3"
@@ -85,6 +85,7 @@
       method: GET
       headers:
         Authorization: "Bearer {{ rancher_token }}"
+        Accept: "application/json"
       validate_certs: no
     register: cluster_info
 
@@ -97,7 +98,7 @@
       cluster_id: "{{ cluster_info.json.data[0].id }}"
 
   ###########################################################################
-  # GET REGISTRATION COMMAND (CRITICAL FIX)
+  # GET REGISTRATION COMMAND
   ###########################################################################
   - name: Get registration token
     uri:
@@ -105,6 +106,7 @@
       method: GET
       headers:
         Authorization: "Bearer {{ rancher_token }}"
+        Accept: "application/json"
       validate_certs: no
     register: reg_info
     until:
@@ -114,17 +116,12 @@
     retries: 20
     delay: 5
 
-  - name: Fix Rancher node command (NO -- BUG)
+  - name: Fix Rancher node command (SAFE)
     set_fact:
-      node_command: >-
-        {{
-          reg_info.json.data[0].nodeCommand
-          | replace('curl ', 'curl -k ')
-          | regex_replace('--server ([^ ]+)', '--server \\1 --insecure')
-        }}
+      node_command: "{{ reg_info.json.data[0].nodeCommand | replace('curl ', 'curl -k ') }}"
 
   ###########################################################################
-  # CLOUD-INIT (STABLE & VERIFIED)
+  # CLOUD-INIT
   ###########################################################################
   - name: Create cloud-init files
     copy:
@@ -138,7 +135,7 @@
           - nfs-common
 
         runcmd:
-          - sleep 30
+          - sleep 40
           - |
             CMD="{{ node_command }}"
             {% if 'etcd' in item.1 %}CMD="$CMD --etcd"{% endif %}
@@ -188,6 +185,7 @@
       method: GET
       headers:
         Authorization: "Bearer {{ rancher_token }}"
+        Accept: "application/json"
       validate_certs: no
     register: cluster_status
     until: cluster_status.json.state == "active"
