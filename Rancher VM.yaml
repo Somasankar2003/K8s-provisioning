@@ -38,14 +38,14 @@
     ###########################################################################
     # OpenStack auth (HARDCODED)
     ###########################################################################
-    os_auth_url: "https://keystone-internal.openstack.svc:5000/v3"
+    os_auth_url: "https://keystone-public-openstack.apps.pgrhoso.dccloud.com"
     os_project_name: "admin"
     os_project_domain_id: "default"
     os_username: "admin"
     os_user_domain_name: "Default"
     os_password: "stl@123"
     os_region_name: "regionOne"
-    os_interface: internal
+    os_interface: "public"
     os_identity_api_version: "3"
 
   tasks:
