@@ -1,5 +1,5 @@
 ---
-- name: Create multiple VMs on OpenStack and auto-register to Rancher
+- name: Create OpenStack VMs and auto-register to Rancher
   hosts: localhost
   connection: local
   gather_facts: no
@@ -16,7 +16,6 @@
     # Survey variables (AAP)
     ###########################################################################
     vm_count: "{{ vm_count | int }}"
-    node_roles: "{{ node_roles }}"
     vm_net: "{{ vm_net }}"
     vm_flavor: "{{ vm_flavor }}"
     vm_security_groups: "{{ vm_security_groups }}"
@@ -50,29 +49,37 @@
   ###########################################################################
   # VALIDATION
   ###########################################################################
-  - name: Validate inputs
+  - name: Validate VM count and names
     assert:
       that:
         - vm_count >= 1
         - vm_names_list | length == vm_count
-      fail_msg: "vm_count must match VM names"
+      fail_msg: "vm_count must match number of VM names"
 
-  - name: Normalize node roles
+  ###########################################################################
+  # AUTO ROLE GENERATION (GUARANTEED LOGIC)
+  ###########################################################################
+  - name: Generate roles automatically
     set_fact:
       parsed_roles: >-
         {{
-          [node_roles]
+          ['etcd,controlplane,worker']
           if vm_count == 1
-          else (node_roles.split(',') | map('trim') | list)
+          else
+          (
+            range(0, vm_count)
+            | map('int')
+            | map('mod', 3)
+            | map('extract', {
+                0: 'etcd',
+                1: 'worker',
+                2: 'controlplane'
+              })
+            | list
+          )
         }}
 
-  - name: Validate role count
-    assert:
-      that:
-        - parsed_roles | length == vm_count
-      fail_msg: "node_roles count must match vm_count"
-
-  - name: Build VM role mapping
+  - name: Build VM to role mapping
     set_fact:
       vm_role_map: "{{ vm_names_list | zip(parsed_roles) | list }}"
 
@@ -93,7 +100,8 @@
       msg: "Cluster '{{ cluster_name }}' not found in Rancher"
     when: cluster_info.json.data | length == 0
 
-  - set_fact:
+  - name: Set cluster ID
+    set_fact:
       cluster_id: "{{ cluster_info.json.data[0].id }}"
 
   ###########################################################################
@@ -108,16 +116,18 @@
       validate_certs: no
     register: reg_info
     until:
+      - reg_info.json.data | length > 0
       - reg_info.json.data[0].nodeCommand is defined
       - reg_info.json.data[0].nodeCommand != ""
     retries: 20
     delay: 5
 
-  - set_fact:
+  - name: Prepare node join command
+    set_fact:
       node_command: "{{ reg_info.json.data[0].nodeCommand | replace('curl ', 'curl -k ') }}"
 
   ###########################################################################
-  # CLOUD-INIT (CORRECT)
+  # CLOUD-INIT
   ###########################################################################
   - name: Create cloud-init files
     copy:
@@ -131,9 +141,9 @@
           - nfs-common
 
         runcmd:
-          - sleep 20
+          - sleep 30
           - |
-            CMD='{{ node_command }}'
+            CMD="{{ node_command }}"
             {% if 'etcd' in item.1 %}CMD="$CMD --etcd"{% endif %}
             {% if 'controlplane' in item.1 %}CMD="$CMD --controlplane"{% endif %}
             {% if 'worker' in item.1 %}CMD="$CMD --worker"{% endif %}
@@ -190,7 +200,7 @@
   ###########################################################################
   # CLEANUP
   ###########################################################################
-  - name: Clean temp files
+  - name: Clean temporary cloud-init files
     file:
       path: "/tmp/cloud-init-{{ item }}.yml"
       state: absent
