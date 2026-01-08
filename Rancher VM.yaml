@@ -99,16 +99,16 @@
   ###########################################################################
   # GET RANCHER JOIN TOKEN
   ###########################################################################
-  - name: Check for existing registration tokens
+  - name: Get registration tokens
     uri:
       url: "{{ rancher_url }}/v3/clusterRegistrationTokens?clusterId={{ cluster_id }}"
       method: GET
       headers:
         Authorization: "Bearer {{ rancher_token }}"
       validate_certs: no
-    register: existing_tokens
+    register: reg_tokens
 
-  - name: Create registration token if needed
+  - name: Create token if missing
     uri:
       url: "{{ rancher_url }}/v3/clusterRegistrationTokens"
       method: POST
@@ -118,10 +118,9 @@
       body:
         clusterId: "{{ cluster_id }}"
       validate_certs: no
-    when: existing_tokens.json.data | length == 0
-    ignore_errors: yes
+    when: reg_tokens.json.data | length == 0
 
-  - name: Wait for node command to be ready
+  - name: Wait for node command
     uri:
       url: "{{ rancher_url }}/v3/clusterRegistrationTokens?clusterId={{ cluster_id }}"
       method: GET
@@ -139,7 +138,7 @@
       node_command: "{{ reg_info.json.data[0].nodeCommand | replace('curl ', 'curl -k ') }}"
 
   ###########################################################################
-  # CLOUD-INIT
+  # CLOUD-INIT (FIXED FOR RANCHER)
   ###########################################################################
   - name: Create cloud-init files
     copy:
@@ -149,14 +148,14 @@
         package_update: true
         packages:
           - curl
-          - docker.io
           - jq
           - nfs-common
+          - containerd
 
         runcmd:
-          - systemctl enable docker
-          - systemctl start docker
-          - sleep 10
+          - systemctl enable containerd
+          - systemctl start containerd
+          - sleep 20
           - |
             CMD='{{ node_command }}'
             {% if 'etcd' in item.1 %}CMD="$CMD --etcd"{% endif %}
@@ -169,7 +168,7 @@
     loop: "{{ vm_role_map }}"
 
   ###########################################################################
-  # CREATE VMS (SECURITY GROUP ADDED ONLY)
+  # CREATE VMS
   ###########################################################################
   - name: Create VM on OpenStack
     openstack.cloud.server:
@@ -196,7 +195,6 @@
       OS_INTERFACE: "{{ os_interface }}"
       OS_IDENTITY_API_VERSION: "{{ os_identity_api_version }}"
     loop: "{{ vm_role_map }}"
-    ignore_errors: yes
 
   ###########################################################################
   # WAIT FOR CLUSTER
@@ -210,8 +208,8 @@
       validate_certs: no
     register: cluster_status
     until: cluster_status.json.state == "active"
-    retries: 100
-    delay: 10
+    retries: 120
+    delay: 15
 
   ###########################################################################
   # CLEANUP
