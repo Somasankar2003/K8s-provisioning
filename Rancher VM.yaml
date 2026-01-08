@@ -41,7 +41,7 @@
     os_project_domain_id: "default"
     os_username: "admin"
     os_user_domain_name: "Default"
-    os_password: "stl@123""
+    os_password: "stl@123"
     os_region_name: "regionOne"
     os_interface: "public"
     os_identity_api_version: "3"
