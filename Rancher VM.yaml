@@ -23,22 +23,20 @@
     vm_names_list: "{{ vm_name_prefix.split(',') | map('trim') | list }}"
 
     ###########################################################################
-    # ROLE-BASED DISK SIZES (CRITICAL FIX)
+    # Root volume
     ###########################################################################
-    etcd_disk: 100
-    controlplane_disk: 60
-    worker_disk: 60
+    root_volume_size: 40
+
+    ###########################################################################
+    # Derived variables
+    ###########################################################################
+    parsed_security_groups: "{{ vm_security_groups.split(',') | map('trim') | list }}"
 
     ###########################################################################
     # VM details
     ###########################################################################
-    vm_image: "c2326965-428c-47b0-b2a8-35f81b3eeeb1"
+    vm_image: "0f92312d-bbcf-4c5a-964a-cfa4898940bd"
     vm_keypair: "k8"
-
-    ###########################################################################
-    # Derived
-    ###########################################################################
-    parsed_security_groups: "{{ vm_security_groups.split(',') | map('trim') | list }}"
 
     ###########################################################################
     # OpenStack auth
@@ -64,6 +62,9 @@
         - vm_names_list | length == vm_count
       fail_msg: "vm_count must match number of VM names"
 
+  ###########################################################################
+  # MANUAL ROLE ASSIGNMENT (SURVEY BASED)
+  ###########################################################################
   - name: Parse node roles
     set_fact:
       parsed_roles: "{{ node_roles.split(',') | map('trim') | list }}"
@@ -72,22 +73,25 @@
     assert:
       that:
         - parsed_roles | length == vm_count
-      fail_msg: "node_roles count must match vm_count"
+      fail_msg: >
+        node_roles count must match vm_count.
+        Example: etcd,controlplane,worker
 
-  - name: Validate required roles
+  - name: Validate required Rancher roles
     assert:
       that:
         - "'etcd' in parsed_roles"
         - "'controlplane' in parsed_roles"
         - "'worker' in parsed_roles"
-      fail_msg: "node_roles must include etcd, controlplane, worker"
+      fail_msg: >
+        node_roles must contain etcd, controlplane, and worker at least once
 
-  - name: Build VM-role mapping
+  - name: Build VM to role mapping
     set_fact:
       vm_role_map: "{{ vm_names_list | zip(parsed_roles) | list }}"
 
   ###########################################################################
-  # GET CLUSTER ID
+  # GET RANCHER CLUSTER INFO
   ###########################################################################
   - name: Get cluster ID from Rancher
     uri:
@@ -107,7 +111,7 @@
       cluster_id: "{{ cluster_info.json.data[0].id }}"
 
   ###########################################################################
-  # GET JOIN COMMAND
+  # GET RANCHER JOIN COMMAND
   ###########################################################################
   - name: Get registration token
     uri:
@@ -128,7 +132,7 @@
       node_command: "{{ reg_info.json.data[0].nodeCommand | replace('curl ', 'curl -k ') }}"
 
   ###########################################################################
-  # CLOUD-INIT (RKE2 SAFE)
+  # CLOUD-INIT (FIXED)
   ###########################################################################
   - name: Create cloud-init files
     copy:
@@ -136,7 +140,6 @@
       content: |
         #cloud-config
         package_update: true
-
         packages:
           - curl
           - jq
@@ -164,23 +167,18 @@
             CMD="$CMD --node-name {{ item.0 }}"
             echo "$CMD" > /root/join.sh
             chmod +x /root/join.sh
-            /root/join.sh
+            bash -x /root/join.sh
     loop: "{{ vm_role_map }}"
 
   ###########################################################################
-  # CREATE VMS (BOOT FROM VOLUME – FIXED)
+  # CREATE VMs (BOOT FROM VOLUME)
   ###########################################################################
   - name: Create VM on OpenStack
     openstack.cloud.server:
       state: present
       name: "{{ item.0 }}"
       boot_from_volume: true
-      volume_size: >-
-        {{
-          etcd_disk if 'etcd' in item.1
-          else controlplane_disk if 'controlplane' in item.1
-          else worker_disk
-        }}
+      volume_size: "{{ root_volume_size }}"
       terminate_volume: true
       image: "{{ vm_image }}"
       flavor: "{{ vm_flavor }}"
@@ -190,7 +188,7 @@
       userdata: "{{ lookup('file', '/tmp/cloud-init-' + item.0 + '.yml') }}"
       auto_ip: yes
       wait: yes
-      timeout: 1200
+      timeout: 900
       validate_certs: false
     environment:
       OS_AUTH_URL: "{{ os_auth_url }}"
@@ -205,32 +203,10 @@
     loop: "{{ vm_role_map }}"
 
   ###########################################################################
-  # WAIT FOR CLUSTER ACTIVE
-  ###########################################################################
-  - name: Wait for cluster to become active
-    uri:
-      url: "{{ rancher_url }}/v3/clusters/{{ cluster_id }}"
-      method: GET
-      headers:
-        Authorization: "Bearer {{ rancher_token }}"
-      validate_certs: no
-    register: cluster_status
-    until: cluster_status.json.state == "active"
-    retries: 120
-    delay: 10
-
-  ###########################################################################
   # CLEANUP
   ###########################################################################
-  - name: Clean temporary cloud-init files
+  - name: Clean cloud-init files
     file:
       path: "/tmp/cloud-init-{{ item }}.yml"
       state: absent
     loop: "{{ vm_names_list }}"
-
-  - name: Success
-    debug:
-      msg: |
-        ✅ CLUSTER ACTIVE
-        Cluster: {{ cluster_name }}
-        Nodes: {{ vm_names_list | join(', ') }}
