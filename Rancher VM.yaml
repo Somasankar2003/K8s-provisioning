@@ -97,30 +97,9 @@
       cluster_id: "{{ cluster_info.json.data[0].id }}"
 
   ###########################################################################
-  # GET / CREATE RANCHER JOIN TOKEN
+  # GET RANCHER JOIN COMMAND
   ###########################################################################
-  - name: Get registration tokens
-    uri:
-      url: "{{ rancher_url }}/v3/clusterRegistrationTokens?clusterId={{ cluster_id }}"
-      method: GET
-      headers:
-        Authorization: "Bearer {{ rancher_token }}"
-      validate_certs: no
-    register: reg_tokens
-
-  - name: Create token if missing
-    uri:
-      url: "{{ rancher_url }}/v3/clusterRegistrationTokens"
-      method: POST
-      headers:
-        Authorization: "Bearer {{ rancher_token }}"
-      body_format: json
-      body:
-        clusterId: "{{ cluster_id }}"
-      validate_certs: no
-    when: reg_tokens.json.data | length == 0
-
-  - name: Wait for node command
+  - name: Get registration token
     uri:
       url: "{{ rancher_url }}/v3/clusterRegistrationTokens?clusterId={{ cluster_id }}"
       method: GET
@@ -138,7 +117,7 @@
       node_command: "{{ reg_info.json.data[0].nodeCommand | replace('curl ', 'curl -k ') }}"
 
   ###########################################################################
-  # CLOUD-INIT (K3s FIXED)
+  # CLOUD-INIT (CORRECT)
   ###########################################################################
   - name: Create cloud-init files
     copy:
@@ -152,10 +131,7 @@
           - nfs-common
 
         runcmd:
-          - curl -sfL https://get.k3s.io | sh -
-          - systemctl enable k3s
-          - systemctl start k3s
-          - sleep 30
+          - sleep 20
           - |
             CMD='{{ node_command }}'
             {% if 'etcd' in item.1 %}CMD="$CMD --etcd"{% endif %}
@@ -168,7 +144,7 @@
     loop: "{{ vm_role_map }}"
 
   ###########################################################################
-  # CREATE VMs (SECURITY GROUP FROM SURVEY)
+  # CREATE VMs
   ###########################################################################
   - name: Create VM on OpenStack
     openstack.cloud.server:
