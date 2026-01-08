@@ -13,7 +13,7 @@
     cluster_name: "{{ cluster_name }}"
 
     ###########################################################################
-    # Survey variables (AAP)
+    # Survey variables
     ###########################################################################
     vm_count: "{{ vm_count | int }}"
     node_roles: "{{ node_roles }}"
@@ -22,9 +22,6 @@
     vm_security_groups: "{{ vm_security_groups }}"
     vm_names_list: "{{ vm_name_prefix.split(',') | map('trim') | list }}"
 
-    ###########################################################################
-    # Derived variables
-    ###########################################################################
     parsed_security_groups: "{{ vm_security_groups.split(',') | map('trim') | list }}"
 
     ###########################################################################
@@ -55,31 +52,17 @@
       that:
         - vm_count >= 1
         - vm_names_list | length == vm_count
-      fail_msg: "vm_count must match VM names"
 
-  - name: Normalize node roles
-    set_fact:
-      parsed_roles: >-
-        {{
-          [node_roles]
-          if vm_count == 1
-          else (node_roles.split(',') | map('trim') | list)
-        }}
+  - set_fact:
+      parsed_roles: "{{ node_roles.split(',') | map('trim') | list }}"
 
-  - name: Validate role count
-    assert:
-      that:
-        - parsed_roles | length == vm_count
-      fail_msg: "node_roles count must match vm_count"
-
-  - name: Build VM role mapping
-    set_fact:
+  - set_fact:
       vm_role_map: "{{ vm_names_list | zip(parsed_roles) | list }}"
 
   ###########################################################################
-  # GET RANCHER CLUSTER INFO
+  # GET CLUSTER ID
   ###########################################################################
-  - name: Get cluster ID from Rancher
+  - name: Get cluster ID
     uri:
       url: "{{ rancher_url }}/v3/clusters?name={{ cluster_name }}"
       method: GET
@@ -88,16 +71,11 @@
       validate_certs: no
     register: cluster_info
 
-  - name: Fail if cluster not found
-    fail:
-      msg: "Cluster '{{ cluster_name }}' not found in Rancher"
-    when: cluster_info.json.data | length == 0
-
   - set_fact:
       cluster_id: "{{ cluster_info.json.data[0].id }}"
 
   ###########################################################################
-  # GET RANCHER JOIN COMMAND
+  # GET NODE COMMAND
   ###########################################################################
   - name: Get registration token
     uri:
@@ -107,17 +85,15 @@
         Authorization: "Bearer {{ rancher_token }}"
       validate_certs: no
     register: reg_info
-    until:
-      - reg_info.json.data[0].nodeCommand is defined
-      - reg_info.json.data[0].nodeCommand != ""
+    until: reg_info.json.data[0].nodeCommand != ""
     retries: 20
     delay: 5
 
   - set_fact:
-      node_command: "{{ reg_info.json.data[0].nodeCommand | replace('curl ', 'curl -k ') }}"
+      node_command: "{{ reg_info.json.data[0].nodeCommand | replace('curl ', 'curl -k ') }} --insecure"
 
   ###########################################################################
-  # CLOUD-INIT (CORRECT)
+  # CLOUD INIT
   ###########################################################################
   - name: Create cloud-init files
     copy:
@@ -131,7 +107,7 @@
           - nfs-common
 
         runcmd:
-          - sleep 20
+          - sleep 30
           - |
             CMD='{{ node_command }}'
             {% if 'etcd' in item.1 %}CMD="$CMD --etcd"{% endif %}
@@ -144,9 +120,9 @@
     loop: "{{ vm_role_map }}"
 
   ###########################################################################
-  # CREATE VMs
+  # CREATE VMS
   ###########################################################################
-  - name: Create VM on OpenStack
+  - name: Create VM
     openstack.cloud.server:
       state: present
       name: "{{ item.0 }}"
@@ -175,7 +151,7 @@
   ###########################################################################
   # WAIT FOR CLUSTER
   ###########################################################################
-  - name: Wait for cluster to become active
+  - name: Wait for cluster active
     uri:
       url: "{{ rancher_url }}/v3/clusters/{{ cluster_id }}"
       method: GET
@@ -186,20 +162,3 @@
     until: cluster_status.json.state == "active"
     retries: 120
     delay: 10
-
-  ###########################################################################
-  # CLEANUP
-  ###########################################################################
-  - name: Clean temp files
-    file:
-      path: "/tmp/cloud-init-{{ item }}.yml"
-      state: absent
-    loop: "{{ vm_names_list }}"
-
-  - name: Success message
-    debug:
-      msg: |
-        ✅ SUCCESS!
-        Cluster: {{ cluster_name }}
-        State: {{ cluster_status.json.state }}
-        VMs: {{ vm_names_list | join(', ') }}
