@@ -1,5 +1,5 @@
 ---
-- name: Create OpenStack VMs and auto-register to Rancher
+- name: Create OpenStack VMs with 40GB volume and auto-register to Rancher
   hosts: localhost
   connection: local
   gather_facts: no
@@ -8,46 +8,40 @@
     ###########################################################################
     # Rancher details
     ###########################################################################
-    rancher_url: "https://10.68.0.173"
-    rancher_token: "token-rqh8z:njslgl8dqqv6wp65dlm8ff9mq29ztghffxkqrvzbcst885r2sl2gnw"
+    rancher_url: "https://192.168.210.32"
+    rancher_token: "token-kt4rg:zppllkvsr7xl5cndlb4n4njqbckzjsmkd557xbgmh69bzdc7kqrkbl"
     cluster_name: "{{ cluster_name }}"
 
     ###########################################################################
-    # Survey variables (AAP)
+    # Survey variables
     ###########################################################################
     vm_count: "{{ vm_count | int }}"
     node_roles: "{{ node_roles }}"
     vm_net: "{{ vm_net }}"
     vm_flavor: "{{ vm_flavor }}"
-    vm_security_groups: "{{ vm_security_groups }}"
     vm_names_list: "{{ vm_name_prefix.split(',') | map('trim') | list }}"
 
     ###########################################################################
-    # Root volume
+    # Root volume (MANDATORY)
     ###########################################################################
     root_volume_size: 40
 
     ###########################################################################
-    # Derived variables
-    ###########################################################################
-    parsed_security_groups: "{{ vm_security_groups.split(',') | map('trim') | list }}"
-
-    ###########################################################################
     # VM details
     ###########################################################################
-    vm_image: "0f92312d-bbcf-4c5a-964a-cfa4898940bd"
-    vm_keypair: "k8"
+    vm_image: "a997754d-6cdf-4a21-8e52-5df389d3f7c5"
+    vm_keypair: "k8s"
 
     ###########################################################################
     # OpenStack auth
     ###########################################################################
-    os_auth_url: "https://keystone-public-openstack.apps.pgrhoso.dccloud.com"
-    os_project_name: "admin"
+    os_auth_url: "http://192.168.170.50:5000"
+    os_project_name: "Production Engineering"
     os_project_domain_id: "default"
     os_username: "admin"
     os_user_domain_name: "Default"
-    os_password: "stl@123"
-    os_region_name: "regionOne"
+    os_password: "bLEZFvatBShkvUZyKrasUjmNdTTc9c3HcxWykrro"
+    os_region_name: "RegionOne"
     os_interface: "public"
     os_identity_api_version: "3"
 
@@ -55,7 +49,7 @@
   ###########################################################################
   # VALIDATION
   ###########################################################################
-  - name: Validate VM count and names
+  - name: Validate inputs
     assert:
       that:
         - vm_count >= 1
@@ -81,9 +75,9 @@
         - "'etcd' in parsed_roles"
         - "'controlplane' in parsed_roles"
         - "'worker' in parsed_roles"
-      fail_msg: "node_roles must include etcd, controlplane, worker"
+      fail_msg: "Roles must include etcd, controlplane and worker"
 
-  - name: Build VM to role mapping
+  - name: Build VM → role mapping
     set_fact:
       vm_role_map: "{{ vm_names_list | zip(parsed_roles) | list }}"
 
@@ -101,14 +95,14 @@
 
   - name: Fail if cluster not found
     fail:
-      msg: "Cluster '{{ cluster_name }}' not found"
+      msg: "Cluster {{ cluster_name }} not found in Rancher"
     when: cluster_info.json.data | length == 0
 
   - set_fact:
       cluster_id: "{{ cluster_info.json.data[0].id }}"
 
   ###########################################################################
-  # GET JOIN COMMAND
+  # GET RANCHER JOIN COMMAND
   ###########################################################################
   - name: Get registration token
     uri:
@@ -121,6 +115,7 @@
     until:
       - reg_info.json.data | length > 0
       - reg_info.json.data[0].nodeCommand is defined
+      - reg_info.json.data[0].nodeCommand != ""
     retries: 20
     delay: 5
 
@@ -128,7 +123,7 @@
       node_command: "{{ reg_info.json.data[0].nodeCommand | replace('curl ', 'curl -k ') }}"
 
   ###########################################################################
-  # CLOUD-INIT (FIXED)
+  # CLOUD-INIT
   ###########################################################################
   - name: Create cloud-init files
     copy:
@@ -155,7 +150,6 @@
           - sysctl --system
           - sleep 60
           - |
-            set -eux
             CMD="{{ node_command }}"
             {% if 'etcd' in item.1 %}CMD="$CMD --etcd"{% endif %}
             {% if 'controlplane' in item.1 %}CMD="$CMD --controlplane"{% endif %}
@@ -163,13 +157,13 @@
             CMD="$CMD --node-name {{ item.0 }}"
             echo "$CMD" > /root/join.sh
             chmod +x /root/join.sh
-            bash /root/join.sh
+            /root/join.sh
     loop: "{{ vm_role_map }}"
 
   ###########################################################################
-  # CREATE VMs (BOOT FROM VOLUME)
+  # CREATE VMs (BOOT FROM 40GB VOLUME)
   ###########################################################################
-  - name: Create VM on OpenStack
+  - name: Create VM on OpenStack (boot from volume)
     openstack.cloud.server:
       state: present
       name: "{{ item.0 }}"
@@ -180,9 +174,7 @@
       flavor: "{{ vm_flavor }}"
       key_name: "{{ vm_keypair }}"
       network: "{{ vm_net }}"
-      security_groups: "{{ parsed_security_groups }}"
       userdata: "{{ lookup('file', '/tmp/cloud-init-' + item.0 + '.yml') }}"
-      auto_ip: yes
       wait: yes
       timeout: 900
       validate_certs: false
