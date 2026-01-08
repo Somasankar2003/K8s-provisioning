@@ -38,7 +38,7 @@
     ###########################################################################
     # OpenStack auth (HARDCODED)
     ###########################################################################
-    os_auth_url: "https://keystone-public-openstack.apps.pgrhoso.dccloud.com"
+    os_auth_url: "https://keystone-internal.openstack.svc:5000/v3/"
     os_project_name: "admin"
     os_project_domain_id: "default"
     os_username: "admin"
