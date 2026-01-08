@@ -16,15 +16,16 @@
     # Survey variables (AAP)
     ###########################################################################
     vm_count: "{{ vm_count | int }}"
+    node_roles: "{{ node_roles }}"
     vm_net: "{{ vm_net }}"
     vm_flavor: "{{ vm_flavor }}"
     vm_security_groups: "{{ vm_security_groups }}"
     vm_names_list: "{{ vm_name_prefix.split(',') | map('trim') | list }}"
 
     ###########################################################################
-    # Root volume (REQUIRED – flavor has no disk)
+    # Root volume
     ###########################################################################
-    root_volume_size: 40   # ✅ MUST be >= 40GB to avoid containerd failure
+    root_volume_size: 40
 
     ###########################################################################
     # Derived variables
@@ -62,26 +63,28 @@
       fail_msg: "vm_count must match number of VM names"
 
   ###########################################################################
-  # AUTO ROLE GENERATION (GUARANTEED ALL ROLES)
+  # MANUAL ROLE ASSIGNMENT (SURVEY BASED) ✅ REPLACED PART
   ###########################################################################
-  - name: Generate roles automatically
+  - name: Parse node roles
     set_fact:
-      parsed_roles: >-
-        {{
-          ['etcd,controlplane,worker']
-          if vm_count == 1
-          else
-          (
-            range(0, vm_count)
-            | map('mod', 3)
-            | map('extract', {
-                0: 'etcd',
-                1: 'controlplane',
-                2: 'worker'
-              })
-            | list
-          )
-        }}
+      parsed_roles: "{{ node_roles.split(',') | map('trim') | list }}"
+
+  - name: Validate role count
+    assert:
+      that:
+        - parsed_roles | length == vm_count
+      fail_msg: >
+        node_roles count must match vm_count.
+        Example: etcd,controlplane,worker
+
+  - name: Validate required Rancher roles
+    assert:
+      that:
+        - "'etcd' in parsed_roles"
+        - "'controlplane' in parsed_roles"
+        - "'worker' in parsed_roles"
+      fail_msg: >
+        node_roles must contain etcd, controlplane, and worker at least once
 
   - name: Build VM to role mapping
     set_fact:
@@ -104,8 +107,7 @@
       msg: "Cluster '{{ cluster_name }}' not found in Rancher"
     when: cluster_info.json.data | length == 0
 
-  - name: Set cluster ID
-    set_fact:
+  - set_fact:
       cluster_id: "{{ cluster_info.json.data[0].id }}"
 
   ###########################################################################
@@ -126,12 +128,11 @@
     retries: 20
     delay: 5
 
-  - name: Prepare node join command
-    set_fact:
+  - set_fact:
       node_command: "{{ reg_info.json.data[0].nodeCommand | replace('curl ', 'curl -k ') }}"
 
   ###########################################################################
-  # CLOUD-INIT (HARDENED & FIXED)
+  # CLOUD-INIT
   ###########################################################################
   - name: Create cloud-init files
     copy:
@@ -139,22 +140,16 @@
       content: |
         #cloud-config
         package_update: true
-
         packages:
           - curl
           - jq
           - nfs-common
 
         runcmd:
-          # Disable swap
           - swapoff -a
           - sed -i '/ swap / s/^/#/' /etc/fstab
-
-          # Kernel modules
           - modprobe overlay
           - modprobe br_netfilter
-
-          # Kubernetes sysctl
           - |
             cat <<EOF >/etc/sysctl.d/99-kubernetes.conf
             net.bridge.bridge-nf-call-iptables=1
@@ -162,11 +157,7 @@
             net.ipv4.ip_forward=1
             EOF
           - sysctl --system
-
-          # Wait for network
           - sleep 60
-
-          # Rancher join
           - |
             set -eux
             CMD="{{ node_command }}"
@@ -174,30 +165,25 @@
             {% if 'controlplane' in item.1 %}CMD="$CMD --controlplane"{% endif %}
             {% if 'worker' in item.1 %}CMD="$CMD --worker"{% endif %}
             CMD="$CMD --node-name {{ item.0 }}"
-            echo "$CMD" > /root/join.sh
-            chmod +x /root/join.sh
-            bash -x /root/join.sh
+            bash -x <(echo "$CMD")
     loop: "{{ vm_role_map }}"
 
   ###########################################################################
-  # CREATE VMs (BOOT FROM VOLUME – FIXED)
+  # CREATE VMs (BOOT FROM VOLUME)
   ###########################################################################
-  - name: Create VM on OpenStack (boot from volume)
+  - name: Create VM on OpenStack
     openstack.cloud.server:
       state: present
       name: "{{ item.0 }}"
-
       boot_from_volume: true
       volume_size: "{{ root_volume_size }}"
-      terminate_volume: true          # ✅ CORRECT PARAMETER
+      terminate_volume: true
       image: "{{ vm_image }}"
-
       flavor: "{{ vm_flavor }}"
       key_name: "{{ vm_keypair }}"
       network: "{{ vm_net }}"
       security_groups: "{{ parsed_security_groups }}"
       userdata: "{{ lookup('file', '/tmp/cloud-init-' + item.0 + '.yml') }}"
-
       auto_ip: yes
       wait: yes
       timeout: 900
@@ -215,33 +201,10 @@
     loop: "{{ vm_role_map }}"
 
   ###########################################################################
-  # WAIT FOR CLUSTER
-  ###########################################################################
-  - name: Wait for cluster to become active
-    uri:
-      url: "{{ rancher_url }}/v3/clusters/{{ cluster_id }}"
-      method: GET
-      headers:
-        Authorization: "Bearer {{ rancher_token }}"
-      validate_certs: no
-    register: cluster_status
-    until: cluster_status.json.state == "active"
-    retries: 120
-    delay: 10
-
-  ###########################################################################
   # CLEANUP
   ###########################################################################
-  - name: Clean temporary cloud-init files
+  - name: Clean cloud-init files
     file:
       path: "/tmp/cloud-init-{{ item }}.yml"
       state: absent
     loop: "{{ vm_names_list }}"
-
-  - name: Success message
-    debug:
-      msg: |
-        ✅ SUCCESS!
-        Cluster: {{ cluster_name }}
-        State: {{ cluster_status.json.state }}
-        VMs: {{ vm_names_list | join(', ') }}
