@@ -6,7 +6,7 @@
 
   vars:
     ###########################################################################
-    # Rancher details (YOUR VALUES)
+    # Rancher details
     ###########################################################################
     rancher_url: "https://10.68.0.173"
     rancher_token: "token-rqh8z:njslgl8dqqv6wp65dlm8ff9mq29ztghffxkqrvzbcst885r2sl2gnw"
@@ -28,13 +28,18 @@
     root_volume_size: 40
 
     ###########################################################################
-    # VM details (YOUR IMAGE + KEY)
+    # Derived variables
+    ###########################################################################
+    parsed_security_groups: "{{ vm_security_groups.split(',') | map('trim') | list }}"
+
+    ###########################################################################
+    # VM details
     ###########################################################################
     vm_image: "c2326965-428c-47b0-b2a8-35f81b3eeeb1"
     vm_keypair: "k8"
 
     ###########################################################################
-    # OpenStack auth (YOUR VALUES)
+    # OpenStack auth
     ###########################################################################
     os_auth_url: "https://keystone-public-openstack.apps.pgrhoso.dccloud.com"
     os_project_name: "admin"
@@ -42,57 +47,53 @@
     os_username: "admin"
     os_user_domain_name: "Default"
     os_password: "stl@123"
-    os_region_name: "RegionOne"
+    os_region_name: "regionOne"
     os_interface: "public"
     os_identity_api_version: "3"
-
-    parsed_security_groups: "{{ vm_security_groups.split(',') | map('trim') | list }}"
 
   tasks:
   ###########################################################################
   # VALIDATION
   ###########################################################################
-  - name: Validate VM names count
+  - name: Validate VM count and names
     assert:
       that:
+        - vm_count >= 1
         - vm_names_list | length == vm_count
-      fail_msg: "vm_count must match vm_name_prefix count"
+      fail_msg: "vm_count must match number of VM names"
 
   ###########################################################################
-  # FLEXIBLE ROLE PARSING (FIXED)
+  # MANUAL ROLE ASSIGNMENT (SURVEY BASED)
   ###########################################################################
-  - name: Parse roles per VM
+  - name: Parse node roles
     set_fact:
-      parsed_roles_raw: "{{ node_roles.split(',') | map('trim') | list }}"
+      parsed_roles: "{{ node_roles.split(',') | map('trim') | list }}"
 
   - name: Validate role count
     assert:
       that:
-        - parsed_roles_raw | length == vm_count
+        - parsed_roles | length == vm_count
       fail_msg: >
-        node_roles count must equal vm_count.
-        Example: etcd,controlplane+worker,worker
+        node_roles count must match vm_count.
+        Example: etcd,controlplane,worker
 
-  - name: Build VM → role mapping
-    set_fact:
-      vm_role_map: "{{ vm_names_list | zip(parsed_roles_raw | map('split', '+')) | list }}"
-
-  - name: Collect all roles
-    set_fact:
-      all_roles: "{{ vm_role_map | map('last') | flatten | unique }}"
-
-  - name: Validate mandatory Rancher roles
+  - name: Validate required Rancher roles
     assert:
       that:
-        - "'etcd' in all_roles"
-        - "'controlplane' in all_roles"
-        - "'worker' in all_roles"
-      fail_msg: "etcd, controlplane and worker must exist at least once"
+        - "'etcd' in parsed_roles"
+        - "'controlplane' in parsed_roles"
+        - "'worker' in parsed_roles"
+      fail_msg: >
+        node_roles must contain etcd, controlplane, and worker at least once
+
+  - name: Build VM to role mapping
+    set_fact:
+      vm_role_map: "{{ vm_names_list | zip(parsed_roles) | list }}"
 
   ###########################################################################
-  # GET RANCHER CLUSTER
+  # GET RANCHER CLUSTER INFO
   ###########################################################################
-  - name: Get Rancher cluster ID
+  - name: Get cluster ID from Rancher
     uri:
       url: "{{ rancher_url }}/v3/clusters?name={{ cluster_name }}"
       method: GET
@@ -103,16 +104,16 @@
 
   - name: Fail if cluster not found
     fail:
-      msg: "Cluster {{ cluster_name }} not found"
+      msg: "Cluster '{{ cluster_name }}' not found in Rancher"
     when: cluster_info.json.data | length == 0
 
   - set_fact:
       cluster_id: "{{ cluster_info.json.data[0].id }}"
 
   ###########################################################################
-  # GET JOIN COMMAND
+  # GET RANCHER JOIN COMMAND
   ###########################################################################
-  - name: Get node registration command
+  - name: Get registration token
     uri:
       url: "{{ rancher_url }}/v3/clusterRegistrationTokens?clusterId={{ cluster_id }}"
       method: GET
@@ -123,6 +124,7 @@
     until:
       - reg_info.json.data | length > 0
       - reg_info.json.data[0].nodeCommand is defined
+      - reg_info.json.data[0].nodeCommand != ""
     retries: 20
     delay: 5
 
@@ -130,7 +132,7 @@
       node_command: "{{ reg_info.json.data[0].nodeCommand | replace('curl ', 'curl -k ') }}"
 
   ###########################################################################
-  # CLOUD-INIT
+  # CLOUD-INIT (FIXED)
   ###########################################################################
   - name: Create cloud-init files
     copy:
@@ -157,6 +159,7 @@
           - sysctl --system
           - sleep 60
           - |
+            set -eux
             CMD="{{ node_command }}"
             {% if 'etcd' in item.1 %}CMD="$CMD --etcd"{% endif %}
             {% if 'controlplane' in item.1 %}CMD="$CMD --controlplane"{% endif %}
@@ -164,11 +167,11 @@
             CMD="$CMD --node-name {{ item.0 }}"
             echo "$CMD" > /root/join.sh
             chmod +x /root/join.sh
-            bash /root/join.sh
+            bash -x /root/join.sh
     loop: "{{ vm_role_map }}"
 
   ###########################################################################
-  # CREATE VMs (BOOT FROM 40GB VOLUME)
+  # CREATE VMs (BOOT FROM VOLUME)
   ###########################################################################
   - name: Create VM on OpenStack
     openstack.cloud.server:
@@ -183,6 +186,7 @@
       network: "{{ vm_net }}"
       security_groups: "{{ parsed_security_groups }}"
       userdata: "{{ lookup('file', '/tmp/cloud-init-' + item.0 + '.yml') }}"
+      auto_ip: yes
       wait: yes
       timeout: 900
       validate_certs: false
@@ -201,7 +205,7 @@
   ###########################################################################
   # CLEANUP
   ###########################################################################
-  - name: Cleanup cloud-init files
+  - name: Clean cloud-init files
     file:
       path: "/tmp/cloud-init-{{ item }}.yml"
       state: absent
