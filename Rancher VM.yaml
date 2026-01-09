@@ -53,42 +53,37 @@
 
   tasks:
   ###########################################################################
-  # VALIDATION
-  ###########################################################################
-  - name: Validate VM count and names
-    assert:
-      that:
-        - vm_count >= 1
-        - vm_names_list | length == vm_count
-      fail_msg: "vm_count must match number of VM names"
+    # VALIDATION
+    ###########################################################################
+    - name: Validate vm_count
+      fail:
+        msg: "vm_count must be positive"
+      when: vm_count < 1
 
-  ###########################################################################
-  # MANUAL ROLE ASSIGNMENT (SURVEY BASED)
-  ###########################################################################
-  - name: Parse node roles
-    set_fact:
-      parsed_roles: "{{ node_roles.split(',') | map('trim') | list }}"
+    - name: Convert comma-separated roles into list
+      set_fact:
+        parsed_roles: "{{ node_roles.split(',') }}"
 
-  - name: Validate role count
-    assert:
-      that:
-        - parsed_roles | length == vm_count
-      fail_msg: >
-        node_roles count must match vm_count.
-        Example: etcd,controlplane,worker
+    - name: Ensure role count matches VM count
+      assert:
+        that:
+          - parsed_roles | length == vm_count
+        fail_msg: "Number of roles does not match number of VMs!"
 
-  - name: Validate required Rancher roles
-    assert:
-      that:
-        - "'etcd' in parsed_roles"
-        - "'controlplane' in parsed_roles"
-        - "'worker' in parsed_roles"
-      fail_msg: >
-        node_roles must contain etcd, controlplane, and worker at least once
+    - name: Ensure VM names count matches vm_count
+      assert:
+        that:
+          - vm_names_list | length == vm_count
+        fail_msg: "VM name count does not match vm_count!"
 
-  - name: Build VM to role mapping
-    set_fact:
-      vm_role_map: "{{ vm_names_list | zip(parsed_roles) | list }}"
+    - name: Build VM → role map
+      set_fact:
+        vm_role_map: "{{ vm_names_list | zip(parsed_roles) | list }}"
+
+    - debug:
+        msg: "VM {{ item.0 }} will be {{ item.1 }}"
+      loop: "{{ vm_role_map }}"
+
 
   ###########################################################################
   # GET RANCHER CLUSTER INFO
