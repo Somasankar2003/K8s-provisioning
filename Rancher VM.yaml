@@ -23,7 +23,7 @@
     vm_names_list: "{{ vm_name_prefix.split(',') | map('trim') | list }}"
 
     ###########################################################################
-    # Root volume
+    # Root volume (FIXED)
     ###########################################################################
     root_volume_size: 40
 
@@ -104,29 +104,7 @@
   ###########################################################################
   # GET RANCHER JOIN TOKEN
   ###########################################################################
-  - name: Check for existing registration tokens
-    uri:
-      url: "{{ rancher_url }}/v3/clusterRegistrationTokens?clusterId={{ cluster_id }}"
-      method: GET
-      headers:
-        Authorization: "Bearer {{ rancher_token }}"
-      validate_certs: no
-    register: existing_tokens
-
-  - name: Create registration token if needed
-    uri:
-      url: "{{ rancher_url }}/v3/clusterRegistrationTokens"
-      method: POST
-      headers:
-        Authorization: "Bearer {{ rancher_token }}"
-      body_format: json
-      body:
-        clusterId: "{{ cluster_id }}"
-      validate_certs: no
-    when: existing_tokens.json.data | length == 0
-    ignore_errors: yes
-
-  - name: Wait for node command to be ready
+  - name: Get registration token
     uri:
       url: "{{ rancher_url }}/v3/clusterRegistrationTokens?clusterId={{ cluster_id }}"
       method: GET
@@ -134,18 +112,12 @@
         Authorization: "Bearer {{ rancher_token }}"
       validate_certs: no
     register: reg_info
-    until:
-      - reg_info.json.data[0].nodeCommand is defined
-      - reg_info.json.data[0].nodeCommand != ""
+    until: reg_info.json.data | length > 0 and reg_info.json.data[0].nodeCommand is defined
     retries: 15
     delay: 3
 
   - set_fact:
-      node_command_raw: "{{ reg_info.json.data[0].nodeCommand }}"
-      rancher_token_id: "{{ reg_info.json.data[0].token }}"
-
-  - set_fact:
-      node_command: "{{ node_command_raw | replace('curl ', 'curl -k ') }}"
+      node_command: "{{ reg_info.json.data[0].nodeCommand | replace('curl ', 'curl -k ') }}"
 
   ###########################################################################
   # CLOUD-INIT
@@ -167,32 +139,35 @@
           - systemctl start docker
           - sleep 10
           - |
-            FINAL_CMD='{{ node_command }}'
-            {% if 'etcd' in item.1 %}FINAL_CMD="$FINAL_CMD --etcd"{% endif %}
-            {% if 'controlplane' in item.1 %}FINAL_CMD="$FINAL_CMD --controlplane"{% endif %}
-            {% if 'worker' in item.1 %}FINAL_CMD="$FINAL_CMD --worker"{% endif %}
-            FINAL_CMD="$FINAL_CMD --node-name {{ item.0 }}"
-            echo "$FINAL_CMD" > /root/join.sh
+            CMD="{{ node_command }}"
+            {% if 'etcd' in item.1 %}CMD="$CMD --etcd"{% endif %}
+            {% if 'controlplane' in item.1 %}CMD="$CMD --controlplane"{% endif %}
+            {% if 'worker' in item.1 %}CMD="$CMD --worker"{% endif %}
+            CMD="$CMD --node-name {{ item.0 }}"
+            echo "$CMD" > /root/join.sh
             chmod +x /root/join.sh
             /root/join.sh
     loop: "{{ vm_role_map }}"
 
   ###########################################################################
-  # CREATE VMS  ✅ FIXED INDENTATION HERE
+  # CREATE VMS (ROOT DISK FIXED)
   ###########################################################################
-  - name: Create VM on OpenStack
+  - name: Create VM on OpenStack with 40GB root disk
     openstack.cloud.server:
       state: present
       name: "{{ item.0 }}"
-      image: "{{ vm_image }}"
       flavor: "{{ vm_flavor }}"
       key_name: "{{ vm_keypair }}"
       security_groups: "{{ parsed_security_groups }}"
       network: "{{ vm_net }}"
       userdata: "{{ lookup('file', '/tmp/cloud-init-' + item.0 + '.yml') }}"
+      boot_from_volume: true
+      volume_size: "{{ root_volume_size }}"
+      image: "{{ vm_image }}"
+      terminate_volume: true
       auto_ip: yes
       wait: yes
-      timeout: 600
+      timeout: 900
       validate_certs: false
     environment:
       OS_AUTH_URL: "{{ os_auth_url }}"
@@ -204,46 +179,7 @@
       OS_REGION_NAME: "{{ os_region_name }}"
       OS_INTERFACE: "{{ os_interface }}"
       OS_IDENTITY_API_VERSION: "{{ os_identity_api_version }}"
-    register: vms
     loop: "{{ vm_role_map }}"
-    ignore_errors: yes
-
-  ###########################################################################
-  # SHOW VM IPs
-  ###########################################################################
-  - name: Show VM IPs
-    debug:
-      msg: >
-        VM {{ item.0 }} created
-        IP: {{ vms.results[loop.index0].server.accessIPv4 | default('N/A') }}
-    loop: "{{ vm_role_map }}"
-
-  ###########################################################################
-  # WAIT FOR NODES & CLUSTER ACTIVE
-  ###########################################################################
-  - name: Wait for nodes to appear in Rancher
-    uri:
-      url: "{{ rancher_url }}/v3/nodes?clusterId={{ cluster_id }}"
-      method: GET
-      headers:
-        Authorization: "Bearer {{ rancher_token }}"
-      validate_certs: no
-    register: rancher_nodes
-    until: rancher_nodes.json.data | length >= vm_count
-    retries: 100
-    delay: 10
-
-  - name: Wait for cluster to become active
-    uri:
-      url: "{{ rancher_url }}/v3/clusters/{{ cluster_id }}"
-      method: GET
-      headers:
-        Authorization: "Bearer {{ rancher_token }}"
-      validate_certs: no
-    register: cluster_status
-    until: cluster_status.json.state == "active"
-    retries: 100
-    delay: 10
 
   ###########################################################################
   # CLEANUP
@@ -257,7 +193,7 @@
   - name: Success message
     debug:
       msg: |
-        ✅ SUCCESS!
+        ✅ SUCCESS
         Cluster: {{ cluster_name }}
-        State: {{ cluster_status.json.state }}
-        VMs: {{ vm_names_list | join(', ') }}
+        Root Disk: {{ root_volume_size }}GB
+        Nodes: {{ vm_names_list | join(', ') }}
