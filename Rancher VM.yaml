@@ -9,7 +9,7 @@
     os_compute_base: "http://192.168.170.50:8774/v2.1"
 
     # PROJECT VARIABLES (NOW EXTERNAL / SURVEY-COMPATIBLE)
-    os_project_id: "{{ project_id }}"
+    
     os_project_name: "{{ project_name }}"
 
     # DOMAIN + USER AUTH
@@ -45,7 +45,7 @@
                   password: "{{ os_password }}"
             scope:
               project:
-                id: "{{ os_project_id }}"
+                name: "{{ os_project_name }}"
       register: keystone_auth
 
     - set_fact:
