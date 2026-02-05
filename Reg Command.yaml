@@ -4,7 +4,7 @@
   gather_facts: false
   vars:
     rancher_url: "https://10.68.0.173"
-    api_token: "token-rqh8z:njslgl8dqqv6wp65dlm8ff9mq29ztghffxkqrvzbcst885r2sl2gnw"
+    api_token: "token-89chg:xv4wc4tmkxhh4t8dz6gzd84dqpghzh8rsfbn7lb5sssc57hmjfncwk"
     cluster_name: "{{ cluster_name }}"
     # Hardcode only the correct checksum
     correct_checksum: "1223eddc5792fd9a636f24082dc5dd1d93a682391a6425aa0b7d674f1645ab03"
