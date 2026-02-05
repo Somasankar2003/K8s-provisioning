@@ -120,7 +120,7 @@
       node_command: "{{ reg_info.json.data[0].nodeCommand | replace('curl ', 'curl -k ') }}"
 
   ###########################################################################
-  # CLOUD-INIT
+  # CLOUD-INIT (FIXED — DOCKER REMOVED)
   ###########################################################################
   - name: Create cloud-init files
     copy:
@@ -130,14 +130,10 @@
         package_update: true
         packages:
           - curl
-          - docker.io
           - jq
           - nfs-common
 
         runcmd:
-          - systemctl enable docker
-          - systemctl start docker
-          - sleep 10
           - |
             CMD="{{ node_command }}"
             {% if 'etcd' in item.1 %}CMD="$CMD --etcd"{% endif %}
